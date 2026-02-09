@@ -263,6 +263,57 @@ def generate_final_report(
         lines.append("## 指标尺度与可比性讨论（Sprint 2）\n")
         lines.append("- 未找到 metric_scale 表（reports/profiling/tables/metric_scale.csv）。请先运行 profiling 步骤。\n")
 
+    # 时间规则性与频率一致性（Sprint 2）
+    tr_path = Path("reports/profiling/tables/time_regularity.csv")
+    lines.append("\n")
+    if tr_path.exists():
+        try:
+            df_tr = pd.read_csv(tr_path)
+            rows_tr = len(df_tr)
+
+            lines.append("## 时间规则性与频率一致性（Sprint 2）\n")
+            lines.append(f"- time_regularity 总行数：**{rows_tr}**")
+            lines.append("\n")
+
+            # show full table
+            if not df_tr.empty:
+                cols = [c for c in ["asset", "metric", "freq", "n_intervals", "n_non_1d", "max_gap_days", "gap_ratio"] if c in df_tr.columns]
+                header = "| " + " | ".join(cols) + " |"
+                sep = "| " + " | ".join(["---"] * len(cols)) + " |"
+                lines.append(header)
+                lines.append(sep)
+                for _, r in df_tr.iterrows():
+                    vals = [str(r[c]) if pd.notna(r[c]) else "" for c in cols]
+                    lines.append("| " + " | ".join(vals) + " |")
+                lines.append("\n")
+
+            # interpret results
+            try:
+                if "gap_ratio" in df_tr.columns:
+                    gr = pd.to_numeric(df_tr["gap_ratio"], errors="coerce").dropna()
+                    if gr.empty:
+                        lines.append("- 未计算到有效的 gap_ratio 值。")
+                    else:
+                        if (gr == 0).all():
+                            lines.append("- 所有指标在观测窗口内均保持严格的日频连续性，未发现时间跳跃。")
+                        else:
+                            max_gap = int(df_tr["max_gap_days"].max()) if "max_gap_days" in df_tr.columns else None
+                            if max_gap is None:
+                                lines.append("- 存在非 1 日的时间间隔，请在建模或对齐分析前检查具体指标。")
+                            else:
+                                lines.append(f"- 部分指标存在非 1 日的时间间隔（最大间隔 {max_gap} 天），在进行时间序列建模或对齐分析前需特别处理。")
+                else:
+                    lines.append("- 无 gap_ratio 列，无法自动判定时间规则性。")
+            except Exception:
+                lines.append("- 无法自动判定时间规则性，建议手动检查 time_regularity 表。")
+
+            lines.append("\n")
+        except Exception as exc:
+            logger.warning("Failed to read time_regularity.csv: %s", exc)
+    else:
+        lines.append("## 时间规则性与频率一致性（Sprint 2）\n")
+        lines.append("- 未找到 time_regularity 表（reports/profiling/tables/time_regularity.csv）。请先运行 profiling 步骤。\n")
+
     # Assemble text once and write with explicit overwrite mode
     out_text = "\n".join(lines)
     # Trim accidental trailing percent signs or stray characters, ensure ends with newline

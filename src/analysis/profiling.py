@@ -77,6 +77,16 @@ def run_profiling(output_dir: str = "reports/profiling") -> Dict[str, Any]:
         except Exception as exc:
             logger.warning("Failed to compute metric scale: %s", exc)
 
+        # Compute time regularity (Sprint 2.3 - Time Regularity)
+        try:
+            df_time_reg = compute_time_regularity(conn)
+            tr_path = tables_dir / "time_regularity.csv"
+            df_time_reg.to_csv(tr_path, index=False, header=True)
+            out["time_regularity_csv"] = str(tr_path)
+            out["rows_time_regularity"] = len(df_time_reg)
+        except Exception as exc:
+            logger.warning("Failed to compute time regularity: %s", exc)
+
         # Remove any testing temp file if present
         tmp_file = tables_dir / "_tmp.csv"
         if tmp_file.exists():
@@ -260,3 +270,64 @@ def compute_metric_scale(conn) -> pd.DataFrame:
             agg[c] = None
 
     return agg[out_cols]
+
+
+def compute_time_regularity(conn) -> pd.DataFrame:
+    """Analyze time interval regularity per (asset, metric, freq).
+
+    Returns DataFrame with columns:
+      asset, metric, freq, n_intervals, n_non_1d, max_gap_days, gap_ratio
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT asset, metric, freq, ts FROM processed.metrics_long WHERE ts IS NOT NULL ORDER BY asset, metric, freq, ts"
+        )
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description] if cur.description else None
+
+    df = pd.DataFrame(rows, columns=cols if cols is not None else ["asset", "metric", "freq", "ts"])
+    if df.empty:
+        out_cols = ["asset", "metric", "freq", "n_intervals", "n_non_1d", "max_gap_days", "gap_ratio"]
+        return pd.DataFrame(columns=out_cols)
+
+    # parse ts
+    df["ts"] = pd.to_datetime(df["ts"], utc=True)
+
+    # compute deltas per group
+    results = []
+    grouped = df.groupby(["asset", "metric", "freq"], sort=True)
+    for (asset, metric, freq), g in grouped:
+        g = g.sort_values("ts")
+        # compute differences in days between consecutive timestamps
+        diffs = g["ts"].diff().dropna()
+        if diffs.empty:
+            n_intervals = 0
+            n_non_1d = 0
+            max_gap = 0
+            gap_ratio = None
+        else:
+            # delta_days as integer days (floor)
+            delta_days = diffs.dt.total_seconds().div(86400).apply(lambda x: int(x) if pd.notna(x) else None)
+            n_intervals = int(len(delta_days))
+            n_non_1d = int((delta_days != 1).sum())
+            max_gap = int(delta_days.max()) if not delta_days.empty else 0
+            gap_ratio = float(n_non_1d) / float(n_intervals) if n_intervals > 0 else None
+
+        results.append({
+            "asset": asset,
+            "metric": metric,
+            "freq": freq,
+            "n_intervals": n_intervals,
+            "n_non_1d": n_non_1d,
+            "max_gap_days": max_gap,
+            "gap_ratio": gap_ratio,
+        })
+
+    out_df = pd.DataFrame(results)
+    # Ensure column order
+    out_cols = ["asset", "metric", "freq", "n_intervals", "n_non_1d", "max_gap_days", "gap_ratio"]
+    for c in out_cols:
+        if c not in out_df.columns:
+            out_df[c] = None
+
+    return out_df[out_cols]
