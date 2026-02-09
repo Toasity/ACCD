@@ -1,7 +1,161 @@
-"""ETL extract step (placeholder).
+"""ETL extract step: minimal implementation that writes a simulated
+CoinMetrics API response into `raw.api_responses`.
 
-TODO: implement data extraction from CoinMetrics.
+This module intentionally implements only the `extract` (raw write)
+functionality for course delivery. It does not call the real API.
 """
+import json
+from datetime import datetime
+
+from src.config import get_cm_config
+from src.db.engine import get_conn
+from src.utils.logging import logger
+import psycopg2.extras
+
+
+def run_extract() -> int:
+    """Construct a simulated payload and insert into raw.api_responses.
+
+    Returns the inserted id.
+    """
+    cm = get_cm_config()
+
+    from src.config import COINMETRICS_API_KEY
+    sql = (
+        "INSERT INTO raw.api_responses (endpoint, params, status_code, payload)"
+        " VALUES (%s, %s, %s, %s) RETURNING id"
+    )
+
+    # Helper to normalize comma-separated params
+    def _normalize_csv(value):
+        if value is None:
+            return None
+        if isinstance(value, (list, tuple)):
+            return ",".join([str(v).strip() for v in value if v is not None])
+        s = str(value)
+        # replace semicolons with commas, remove extra spaces
+        s = s.replace(";", ",")
+        parts = [p.strip() for p in s.split(",") if p.strip()]
+        return ",".join(parts)
+
+    conn = get_conn()
+    try:
+        if COINMETRICS_API_KEY:
+            # Use real API: first write catalog/assets response
+            from src.coinmetrics.client import CoinMetricsClient, CoinMetricsError
+            from src.coinmetrics.endpoints import fetch_assets, fetch_asset_metrics
+
+            client = CoinMetricsClient(api_key=COINMETRICS_API_KEY)
+
+            # Fetch and store catalog/assets (no 'limit' param sent)
+            try:
+                catalog_json = fetch_assets(client)
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(sql, ("catalog/assets", psycopg2.extras.Json({}), 200, psycopg2.extras.Json(catalog_json)))
+                        cid = cur.fetchone()[0]
+                        logger.info("Inserted catalog raw response id=%s status=%s", cid, 200)
+            except Exception as exc:
+                # Capture structured error if available
+                status = 500
+                err_payload = str(exc)
+                try:
+                    from src.coinmetrics.client import CoinMetricsError
+
+                    if isinstance(exc, CoinMetricsError):
+                        status = getattr(exc, "status_code", 500)
+                        err_payload = getattr(exc, "error_payload", str(exc))
+                except Exception:
+                    pass
+
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(sql, ("catalog/assets", psycopg2.extras.Json({}), status, psycopg2.extras.Json({"error": err_payload})))
+                        cid = cur.fetchone()[0]
+                        logger.info("Inserted catalog error raw response id=%s status=%s", cid, status)
+
+            # Prepare timeseries params
+            assets_raw = cm.get("assets")
+            metrics_raw = cm.get("metrics")
+            assets_str = _normalize_csv(assets_raw) or ""
+            metrics_str = _normalize_csv(metrics_raw) or ""
+            # Use first asset for now
+            first_asset = assets_str.split(",")[0] if assets_str else ""
+            start = cm.get("start_date")
+            end = cm.get("end_date")
+            freq = cm.get("frequency")
+
+            ts_params = {
+                "assets": first_asset,
+                "metrics": metrics_str,
+                "frequency": freq,
+                "start_time": start,
+                "end_time": end,
+            }
+
+            # Call timeseries endpoint and store success or error payload
+            try:
+                ts_json = fetch_asset_metrics(client, first_asset, [m.strip() for m in metrics_str.split(",") if m.strip()], start, end, freq)
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(sql, ("timeseries/asset-metrics", psycopg2.extras.Json(ts_params), 200, psycopg2.extras.Json(ts_json)))
+                        inserted = cur.fetchone()[0]
+                        logger.info("Inserted timeseries raw response id=%s", inserted)
+                        return inserted
+            except CoinMetricsError as cmerr:
+                # Write the error payload into raw.api_responses for diagnostics
+                err_payload = cmerr.error_payload
+                status = getattr(cmerr, "status_code", None) or 500
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(sql, ("timeseries/asset-metrics", psycopg2.extras.Json(ts_params), status, psycopg2.extras.Json({"error": err_payload})))
+                        inserted = cur.fetchone()[0]
+                        logger.info("Inserted timeseries error raw response id=%s status=%s", inserted, status)
+                        return inserted
+            except Exception as exc:
+                logger.error("Unexpected error calling timeseries: %s", exc)
+                # Record a generic failure payload
+                with conn:
+                    with conn.cursor() as cur:
+                        cur.execute(sql, ("timeseries/asset-metrics", psycopg2.extras.Json(ts_params), 500, psycopg2.extras.Json({"error": str(exc)})))
+                        inserted = cur.fetchone()[0]
+                        logger.info("Inserted timeseries error raw response id=%s status=500", inserted)
+                        return inserted
+        else:
+            # Stub behavior (no API key)
+            params = {
+                "assets": cm.get("assets"),
+                "metrics": cm.get("metrics"),
+                "start_date": cm.get("start_date"),
+                "end_date": cm.get("end_date"),
+                "frequency": cm.get("frequency"),
+            }
+            payload = {
+                "data": [
+                    {
+                        "asset": "btc",
+                        "metric": "PriceUSD",
+                        "time": "2013-01-01T00:00:00Z",
+                        "value": 13.5,
+                    }
+                ],
+                "meta": {"note": "stub for step2.2"},
+            }
+            status = 200
+            endpoint = "timeseries.stub"
+            with conn:
+                with conn.cursor() as cur:
+                    cur.execute(sql, (endpoint, psycopg2.extras.Json(params), status, psycopg2.extras.Json(payload)))
+                    inserted = cur.fetchone()[0]
+                    logger.info("Inserted stub raw.api_responses id=%s", inserted)
+                    return inserted
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
 
 if __name__ == "__main__":
-    print("extract placeholder")
+    _id = run_extract()
+    print(_id)

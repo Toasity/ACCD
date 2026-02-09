@@ -1,5 +1,11 @@
-"""Logging helpers (placeholder)."""
+"""Simple logging helper for scripts."""
 
 import logging
 
-logger = logging.getLogger(__name__)
+
+def get_logger(name: str = __name__):
+	logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+	return logging.getLogger(name)
+
+
+logger = get_logger(__name__)
