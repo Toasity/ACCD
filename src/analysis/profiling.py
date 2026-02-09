@@ -67,6 +67,16 @@ def run_profiling(output_dir: str = "reports/profiling") -> Dict[str, Any]:
         except Exception as exc:
             logger.warning("Failed to compute coverage structure: %s", exc)
 
+        # Compute metric scale statistics (Sprint 2.2 - Metric Scale Awareness)
+        try:
+            df_metric_scale = compute_metric_scale(conn)
+            scale_path = tables_dir / "metric_scale.csv"
+            df_metric_scale.to_csv(scale_path, index=False, header=True)
+            out["metric_scale_csv"] = str(scale_path)
+            out["rows_metric_scale"] = len(df_metric_scale)
+        except Exception as exc:
+            logger.warning("Failed to compute metric scale: %s", exc)
+
         # Remove any testing temp file if present
         tmp_file = tables_dir / "_tmp.csv"
         if tmp_file.exists():
@@ -185,3 +195,68 @@ def compute_coverage_structure(conn) -> pd.DataFrame:
             df[c] = None
 
     return df[out_cols]
+
+
+def compute_metric_scale(conn) -> pd.DataFrame:
+    """Compute scale statistics per (asset, metric, freq) from processed.metrics_long.
+
+    Returns DataFrame with columns:
+      asset, metric, freq, n_values, min_value, max_value, mean_value, std_value,
+      magnitude_order, coefficient_of_variation
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT asset, metric, freq, value FROM processed.metrics_long WHERE value IS NOT NULL"
+        )
+        rows = cur.fetchall()
+        cols = [d[0] for d in cur.description] if cur.description else None
+
+    df = pd.DataFrame(rows, columns=cols if cols is not None else ["asset", "metric", "freq", "value"])
+
+    if df.empty:
+        # return empty structured df
+        out_cols = ["asset", "metric", "freq", "n_values", "min_value", "max_value", "mean_value", "std_value", "magnitude_order", "coefficient_of_variation"]
+        return pd.DataFrame(columns=out_cols)
+
+    # Ensure numeric
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")
+    # Group and aggregate
+    agg = df.groupby(["asset", "metric", "freq"])["value"].agg(["count", "min", "max", "mean", "std"]).reset_index()
+    agg = agg.rename(columns={"count": "n_values", "min": "min_value", "max": "max_value", "mean": "mean_value", "std": "std_value"})
+
+    # magnitude_order: floor(log10(max(abs(min), abs(max)))) when max_abs > 0
+    def _mag_order(row):
+        try:
+            minv = row["min_value"]
+            maxv = row["max_value"]
+            max_abs = max(abs(minv) if pd.notna(minv) else 0, abs(maxv) if pd.notna(maxv) else 0)
+            if max_abs is None or max_abs == 0:
+                return None
+            import math
+
+            return int(math.floor(math.log10(max_abs)))
+        except Exception:
+            return None
+
+    agg["magnitude_order"] = agg.apply(_mag_order, axis=1)
+
+    # coefficient_of_variation: std / mean when mean != 0
+    def _cv(row):
+        try:
+            mean = row["mean_value"]
+            std = row["std_value"]
+            if pd.isna(mean) or mean == 0 or pd.isna(std):
+                return None
+            return float(std) / float(mean)
+        except Exception:
+            return None
+
+    agg["coefficient_of_variation"] = agg.apply(_cv, axis=1)
+
+    # Reorder columns
+    out_cols = ["asset", "metric", "freq", "n_values", "min_value", "max_value", "mean_value", "std_value", "magnitude_order", "coefficient_of_variation"]
+    for c in out_cols:
+        if c not in agg.columns:
+            agg[c] = None
+
+    return agg[out_cols]

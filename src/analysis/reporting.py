@@ -202,6 +202,67 @@ def generate_final_report(
         lines.append("- 目前样本量较小或为 stub 数据，仅用于功能演示；真实运行 CoinMetrics 后请扩规模以获取更可靠结论。")
     lines.append("- 报告为描述性与解释性分析，不构成预测或投资建议。")
 
+    # 指标尺度与可比性讨论（Sprint 2）
+    scale_path = Path("reports/profiling/tables/metric_scale.csv")
+    lines.append("\n")
+    if scale_path.exists():
+        try:
+            df_scale = pd.read_csv(scale_path)
+            rows_scale = len(df_scale)
+
+            # list unique magnitude_order values
+            mag_vals = []
+            if "magnitude_order" in df_scale.columns:
+                mag_vals = sorted(df_scale["magnitude_order"].dropna().unique().tolist())
+
+            lines.append("## 指标尺度与可比性讨论（Sprint 2）\n")
+            lines.append(f"- metric_scale 总行数：**{rows_scale}**")
+            lines.append(f"- magnitude_order 唯一值：**{', '.join(map(str, mag_vals)) if mag_vals else '无'}**")
+            lines.append("\n")
+
+            # Include full table (small rows expected)
+            if not df_scale.empty:
+                cols = [c for c in ["asset", "metric", "freq", "n_values", "min_value", "max_value", "mean_value", "std_value", "magnitude_order", "coefficient_of_variation"] if c in df_scale.columns]
+                header = "| " + " | ".join(cols) + " |"
+                sep = "| " + " | ".join(["---"] * len(cols)) + " |"
+                lines.append(header)
+                lines.append(sep)
+                for _, r in df_scale.iterrows():
+                    vals = [str(r[c]) if pd.notna(r[c]) else "" for c in cols]
+                    lines.append("| " + " | ".join(vals) + " |")
+                lines.append("\n")
+
+            # Dynamic interpretation bullets
+            bullets = []
+            try:
+                # compute per-asset magnitude spread
+                if "magnitude_order" in df_scale.columns:
+                    tmp = df_scale.dropna(subset=["magnitude_order"]).copy()
+                    tmp["magnitude_order"] = pd.to_numeric(tmp["magnitude_order"], errors="coerce")
+                    spread = tmp.groupby("asset")["magnitude_order"].agg(lambda s: (s.max() - s.min()) if not s.empty else 0)
+                    large_diff_assets = spread[spread >= 2]
+                    if not large_diff_assets.empty:
+                        example = large_diff_assets.index[0]
+                        bullets.append(f"不同指标数值尺度差异显著（例如资产 {example} 中存在差异 >= 10^2），直接对原值同图比较会掩盖结构；建议对数变换/归一化或分别绘图。")
+                    else:
+                        bullets.append("指标尺度差异较小，原值同图比较的可解释性较好。")
+                else:
+                    bullets.append("无法计算 magnitude_order（缺失列），请检查 metric_scale 输出。")
+            except Exception:
+                bullets.append("无法自动判定尺度差异，建议手动检查 metric_scale 表。")
+
+            # Add an extra general suggestion
+            bullets.append("建议对数变换或标准化作为常见处理，尤其在不同数量级指标同时展示时。")
+
+            for b in bullets:
+                lines.append(f"- {b}")
+            lines.append("\n")
+        except Exception as exc:
+            logger.warning("Failed to read metric_scale.csv: %s", exc)
+    else:
+        lines.append("## 指标尺度与可比性讨论（Sprint 2）\n")
+        lines.append("- 未找到 metric_scale 表（reports/profiling/tables/metric_scale.csv）。请先运行 profiling 步骤。\n")
+
     # Assemble text once and write with explicit overwrite mode
     out_text = "\n".join(lines)
     # Trim accidental trailing percent signs or stray characters, ensure ends with newline
