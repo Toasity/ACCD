@@ -141,6 +141,60 @@ def generate_final_report(
         lines.append("无可用缺失率数据。")
     lines.append("\n")
 
+    # 时间覆盖与结构分析（Sprint 2）
+    struct_path = Path("reports/profiling/tables/coverage_structure.csv")
+    if struct_path.exists():
+        try:
+            df_struct = pd.read_csv(struct_path)
+            struct_rows = len(df_struct)
+            # coverage_ratio stats (ignore nulls)
+            if "coverage_ratio" in df_struct.columns:
+                cr_series = pd.to_numeric(df_struct["coverage_ratio"], errors="coerce").dropna()
+                cr_mean = float(cr_series.mean()) if not cr_series.empty else None
+                cr_min = float(cr_series.min()) if not cr_series.empty else None
+            else:
+                cr_mean = None
+                cr_min = None
+
+            lines.append("## 时间覆盖与结构分析（Sprint 2）\n")
+            lines.append(f"- coverage_structure 总行数：**{struct_rows}**")
+            if cr_mean is not None:
+                lines.append(f"- coverage_ratio 平均值：**{cr_mean:.4f}**")
+            if cr_min is not None:
+                lines.append(f"- coverage_ratio 最小值：**{cr_min:.4f}**")
+
+            # lowest coverage_ratio top 5
+            low_cr = df_struct.copy()
+            if "coverage_ratio" in low_cr.columns:
+                low_cr["coverage_ratio"] = pd.to_numeric(low_cr["coverage_ratio"], errors="coerce")
+                low_cr = low_cr.dropna(subset=["coverage_ratio"]).sort_values("coverage_ratio", ascending=True).head(5)
+            else:
+                low_cr = low_cr.head(5)
+
+            lines.append("\n")
+            lines.append("### coverage_ratio 最低的前 5 条（若不足则全部）：\n")
+            if not low_cr.empty:
+                cols = [c for c in ["asset", "metric", "freq", "span_days", "n_points", "expected_points", "coverage_ratio"] if c in low_cr.columns]
+                if cols:
+                    header = "| " + " | ".join(cols) + " |"
+                    sep = "| " + " | ".join(["---"] * len(cols)) + " |"
+                    lines.append(header)
+                    lines.append(sep)
+                    for _, r in low_cr.iterrows():
+                        vals = [str(r[c]) for c in cols]
+                        lines.append("| " + " | ".join(vals) + " |")
+                else:
+                    lines.append("无可用 coverage_structure 数据。")
+            else:
+                lines.append("无可用 coverage_ratio 数据。")
+            lines.append("\n")
+        except Exception as exc:
+            logger.warning("Failed to read coverage_structure.csv: %s", exc)
+    else:
+        # no coverage_structure available
+        lines.append("## 时间覆盖与结构分析（Sprint 2）\n")
+        lines.append("- 未找到 coverage_structure 表（reports/profiling/tables/coverage_structure.csv）。请先运行 profiling 步骤。\n")
+
     lines.append("## 指标用途评估（最小结论）\n")
     lines.append("- 覆盖点数较多的指标/资产通常更适合用于跨资产比较。")
     lines.append("- 低缺失率意味着该指标更稳定，适合横向比较与解释性分析。")
