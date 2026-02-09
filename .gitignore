@@ -1,0 +1,16 @@
+.env
+.venv/
+venv/
+__pycache__/
+*.pyc
+.DS_Store
+.pytest_cache/
+.mypy_cache/
+
+# Ignore generated reports but keep the final_report.md under version control
+reports/**
+!reports/
+!reports/final_report.md
+!reports/profiling/
+!reports/profiling/tables/
+!reports/profiling/figures/
