@@ -12,6 +12,25 @@ import requests
 from src.utils.logging import logger
 
 
+def normalize_time(s: str) -> str:
+    """Normalize a time string to strict ISO8601 UTC format.
+
+    - If s is like 'YYYY-MM-DD', return 'YYYY-MM-DDT00:00:00Z'
+    - If s contains 'T', return as-is (but normalize trailing '+00:00' to 'Z')
+    - Raise ValueError on empty/None
+    """
+    if not s:
+        raise ValueError("empty time string")
+    s = str(s).strip()
+    if not s:
+        raise ValueError("empty time string")
+    if len(s) == 10 and s.count("-") == 2 and "T" not in s:
+        return f"{s}T00:00:00Z"
+    if s.endswith("+00:00"):
+        return s[:-6] + "Z"
+    return s
+
+
 class CoinMetricsError(RuntimeError):
     def __init__(self, status_code: int, path: str, error_payload: Any):
         super().__init__(f"CoinMetrics API error {status_code} for {path}")
@@ -69,12 +88,22 @@ class CoinMetricsClient:
         return self.request_json("/catalog/assets", params=None)
 
     def get_asset_metrics(self, asset: str, metrics: List[str], start: str, end: str, frequency: str = "1d") -> Dict[str, Any]:
+        # Normalize time parameters to ISO8601 UTC so API honors the window
+        try:
+            start_t = normalize_time(start)
+        except Exception:
+            start_t = start
+        try:
+            end_t = normalize_time(end)
+        except Exception:
+            end_t = end
+
         params = {
             "assets": asset,
             "metrics": ",".join(metrics) if isinstance(metrics, (list, tuple)) else metrics,
             "frequency": frequency,
-            "start_time": start,
-            "end_time": end,
+            "start_time": start_t,
+            "end_time": end_t,
         }
         return self.request_json("/timeseries/asset-metrics", params=params)
 
